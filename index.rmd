@@ -1,0 +1,148 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Sally Cochrane"
+date: "10/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE) 
+```
+### Introduction  
+
+The goal of this project is to predict the manner in which participants did an exercise. The data come from accelerometers worn on the belt, forearm, arm, and dumbell of 6 participants who were asked to perform lifts correctly and incorrectly in 5 different ways. As the original paper describes it:   
+
+"Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)."
+
+The data for this exercise come from: 
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.  
+
+
+```{r load-libraries}
+library(dplyr)
+library(readr)
+library(caret)
+library(ggplot2)
+library(AppliedPredictiveModeling)
+set.seed(11)
+```
+
+#### 1) Pre-processing the Data: 
+
+First I loaded the data and split the training set into a training set (with 13737 rows), which I used to build my model, and a testing set with (5885 rows) to evaluate the model. 
+
+```{r load-raw-data}
+training_full <- read_csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+final_testing <- read_csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+```{r split-data}
+# split training data for validation: 
+
+inTrain <- createDataPartition(y = training_full$classe, p = 0.7, list = FALSE)
+training0 <- training_full[inTrain, ]
+testing0 <- training_full[-inTrain, ]
+
+dim(training0)
+dim(testing0)
+```
+
+Since there were a _lot_ of variables (columns), the first step in preparing the data was to see if any of the variables have **near-zero variance**. Many did, and I removed them from the dataset. Variables with many NA's were also identified and removed, as well as the variables that only served to identify the participant, as they are unnecessary to building the model. 
+
+```{r clean-data}
+# Clean the data: 
+
+  # 1. find near zero variables and remove those columns from the data set: 
+nzv <- nearZeroVar(training0)
+train <- training0[, -nzv]
+test <- testing0[, -nzv]
+
+# remove columns used to identify user/time (X1, user_name, timestamps 1 and 2, converted timestamp).
+
+training <- train[, -(1:5)]
+testing <- test[, -(1:5)]
+
+# Lots of variables have many NA's. Look at number of na's in each variable: [not run to save space]
+
+# sapply(training, function(x)sum(is.na(x)))
+
+    # Remove variables with lots of NA's: 
+
+removeNA <- sapply(training, function(x)sum(is.na(x))) > 1
+training <- training[, removeNA == FALSE]
+testing <- testing[, removeNA == FALSE]
+```
+
+Next, I checked whether any of the variables were highly correlated (over 0.8). Many were, which suggests that **principal component analysis** might be useful. 
+
+```{r correlation-pca}
+# Correlation? Should we do PCA?
+
+M <- abs(cor(training[,-54]))
+diag(M) <- 0 # all variables correlate with themselves 1
+highly_correlated <- which(M > 0.8, arr.ind=TRUE) # find variables over .8 correlated
+
+highly_correlated
+```
+
+I preprocessed the data with principal component analysis, and applied the PCA from the training data to the test data. 
+```{r pca-preprocessing}
+## Principal component analysis preprocessing: 
+
+preProc <- preProcess(training, method = 'pca', thresh = 0.8)
+trainPC <- predict(preProc, training[, -54])
+testPC <- predict(preProc, testing[, -54])
+```
+
+#### 2) Fit the Models on the Training Data
+
+I fit **three models** on the training set: (1) A **random forest**. Here I used 3 cross-validation folds because random forests tend to over-fit, so cross-validation will help to give a better estimate of out-of-sample accuracy. (2) A **gradient boosted tree**; and (3) a **support vector machine (SVM)**.   
+ 
+
+```{r models }
+## Model 1: Random Forest w/ cv: 
+modelFit1_pca <- train(x = trainPC, y = training$classe, method = 'rf', 
+                  trControl = trainControl(method = "cv"), number = 3)
+
+## Model 2: Gradient Boosted Tree: 
+modelFit2_pca <- train(x = trainPC, y = training$classe, method = "gbm", verbose = FALSE)
+
+## Model 3: Support Vector Machine:
+modelFit3_pca <- e1071::svm(x = trainPC, y = as.factor(training$classe)) 
+
+```
+
+#### 3) Predict the classes on the test set
+Using these models, I predicted outcomes for the test set and evaluated the accuracy of each model using a confusion matrix of predicted outcomes vs. actual outcomes. This step estimates the out-of-sample accuracy of the models. 
+
+```{r predict}
+## Predict on the testing set: 
+
+pred1 <- predict(modelFit1_pca, testPC)
+pred2 <- predict(modelFit2_pca, testPC)
+pred3 <- predict(modelFit3_pca, testPC)
+
+```
+
+#### 4) Choose a Final Model
+The random forest model had the highest accuracy on the test set (0.9675), as compared to the gradient boosted tree (accuracy 0.764) and SVM (accuracy 0.8714). The out-of-sample error rate for the RF model should be about 0.0325, or around 3%. I therefore chose the RF model to predict outcomes ("classe" variable) for the unlabeled test data.  
+
+
+```{r evaluate-model-accuracy}
+
+# Evaluate errors on test set: 
+confusionMatrix(as.factor(testing$classe), pred1) # 0.9675  
+confusionMatrix(as.factor(testing$classe), pred2) # 0.764   
+confusionMatrix(as.factor(testing$classe), pred3) # 0.8714    
+```
+
+#### 5) Final predictions: 
+```{r create-predictions-test-data}
+
+final_testing_pca <- predict(preProc, final_testing[, -160])
+pred_final <- predict(modelFit1_pca, final_testing_pca)
+
+as.data.frame(pred_final)
+```
+
